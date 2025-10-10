@@ -29,16 +29,23 @@ IMAGENES_RPA = [
 
 @st.cache_data
 def cargar_resoluciones():
-    """Carga el archivo de resoluciones desde un CSV."""
+    """Carga el archivo de resoluciones desde un CSV, manejando codificación, nombres y BOM."""
     try:
-        df = pd.read_csv("resoluciones.csv", dtype=str)
-        if len(df.columns) >= 2:
-            df = df.iloc[:, :2]
-            df.columns = ["Codigo", "Texto"]
-            return df
+        df = pd.read_csv("resoluciones.csv", dtype=str, encoding="utf-8-sig")  # elimina BOM si existe
+        df.columns = df.columns.str.strip().str.capitalize()  # convierte 'codigo' -> 'Codigo'
+
+        if "Codigo" not in df.columns or "Texto" not in df.columns:
+            st.error("❌ Las columnas 'Codigo' y 'Texto' no se han encontrado correctamente.")
+            st.stop()
+
+        df = df[["Codigo", "Texto"]]
+        return df
     except FileNotFoundError:
+        st.error("❌ El archivo 'resoluciones.csv' no se encuentra.")
         return None
-    return None
+    except Exception as e:
+        st.error(f"❌ Error al cargar 'resoluciones.csv': {e}")
+        return None
 
 def write_fast(text):
     s = "" if text is None else str(text).strip()
@@ -199,7 +206,7 @@ with tab1:
         else:
             try:
                 # --- Lógica principal de procesamiento ---
-                df = pd.read_excel(uploaded_file, dtype=str, skiprows=3)
+                df = pd.read_excel(uploaded_file, dtype=str, skiprows=1)
                 columnas_necesarias = ["Clave Objeto", "Código", "Nombre", "Importe"]
                 if not all(col in df.columns for col in columnas_necesarias):
                     st.error(f"❌ El archivo de entrada debe tener las columnas: {columnas_necesarias}")
@@ -211,8 +218,21 @@ with tab1:
                 df['Paso'] = "1"
                 df["ClaveExtraida"] = df["Clave Objeto"].str.extract(r'(-20.*)$')[0].str.replace('-', '', n=1)
                 df["ClaveExtraida"] = df["ClaveExtraida"].str.strip()
-                df_resoluciones["Codigo"] = df_resoluciones["Codigo"].str.strip()
-                df["Concepto"] = df["ClaveExtraida"].map(df_resoluciones.set_index("Codigo")["Texto"]).fillna("Texto no encontrado")
+# --- LIMPIEZA Y MAPEO ROBUSTO ---
+                df["ClaveExtraida"] = df["ClaveExtraida"].str.strip()
+                df_resoluciones["Codigo"] = df_resoluciones["Codigo"].astype(str).str.strip()
+                df_resoluciones["Texto"] = df_resoluciones["Texto"].astype(str).str.strip()
+
+# Detectar y avisar si hay códigos duplicados en resoluciones.csv
+                if df_resoluciones["Codigo"].duplicated().any():
+                    duplicados = df_resoluciones[df_resoluciones["Codigo"].duplicated(keep=False)]["Codigo"].unique().tolist()
+                    st.warning(f"⚠️ Se encontraron códigos duplicados en resoluciones.csv: {', '.join(duplicados[:10])} "
+                            f"{'(y más...)' if len(duplicados) > 10 else ''}. Se usará solo la primera aparición de cada uno.")
+                    df_resoluciones = df_resoluciones.drop_duplicates(subset="Codigo", keep="first")
+
+# Realizar el mapeo limpio y seguro
+                mapa_resoluciones = df_resoluciones.set_index("Codigo")["Texto"]
+                df["Concepto"] = df["ClaveExtraida"].map(mapa_resoluciones).fillna("Texto no encontrado")              
                 df.rename(columns={"Código": "Codigo", "Nombre": "Nombre", "Importe": "importe", "Clave Objeto": "Codigo FEAR"}, inplace=True)
                 
                 columnas_finales = ["Codigo", "Nombre", "importe", "Codigo FEAR", "Concepto", "anualidad", "economica", "Paso"]
